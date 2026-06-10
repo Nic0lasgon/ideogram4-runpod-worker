@@ -52,7 +52,7 @@ RUN echo "╔══════════════════════�
  && echo "║ [3/5] Installing hf_xet accelerator     ║" \
  && echo "╚══════════════════════════════════════════╝" \
  && uv pip install -U huggingface_hub hf-xet \
- && python3 -c "import hf_xet; print('hf_xet', hf_xet.__version__, 'ready')" \
+ && python3 -c "import hf_xet, huggingface_hub; print('hf_xet imported ok, huggingface_hub', huggingface_hub.__version__)" \
  && echo "=== [3/5] hf_xet installed ==="
 
 # ─── [4/5] Download Ideogram 4 models (FP8, ~29.5 GB) ───
