@@ -12,6 +12,12 @@
 # syntax=docker/dockerfile:1
 FROM runpod/worker-comfyui:5.8.5-base
 
+# ── Optional: HF_TOKEN for faster model downloads ──
+# Set in RunPod UI → Endpoint → "Hugging Face access token".
+# Without it, downloads still work but are rate-limited.
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
 # ═══════════════════════════════════════════════════════════════════════
 # Build Observability: [1/5] → [5/5] banners visible in RunPod Builds tab.
 # Python code uses RUN heredoc (<<'PYEOF') — Docker does NOT parse the
@@ -67,6 +73,7 @@ RUN echo "╔══════════════════════�
 import os, shutil
 from huggingface_hub import snapshot_download
 
+token = os.environ.get("HF_TOKEN") or None
 snapshot_download(
     "Comfy-Org/Ideogram-4",
     allow_patterns=[
@@ -77,6 +84,7 @@ snapshot_download(
     ],
     local_dir="/tmp/ideogram4",
     local_dir_use_symlinks=False,
+    token=token,
 )
 
 os.makedirs("/comfyui/models/diffusion_models", exist_ok=True)
@@ -121,8 +129,9 @@ RUN echo "╔══════════════════════�
  && echo "╚══════════════════════════════════════════╝"
 
 # ---------------------------------------------------------------------------
-# No HF_TOKEN needed — Comfy-Org/Ideogram-4 is a public repo and hf_xet
-# handles Xet presigned URLs transparently.
+# HF_TOKEN is optional — Comfy-Org/Ideogram-4 is public, but authenticated
+# requests get higher rate limits and faster downloads.
+# Set it in RunPod UI → Endpoint → "Hugging Face access token".
 #
 # Deployment:
 #   RunPod Console → Serverless → New Endpoint → Import Git Repository
