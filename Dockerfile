@@ -13,38 +13,33 @@ FROM runpod/worker-comfyui:5.8.5-base
 
 # ═══════════════════════════════════════════════════════════════════════
 # Build Observability:
-#   Each section prints [N/5] markers visible in the RunPod Builds tab.
+#   Each section prints [N/5] banners visible in the RunPod Builds tab.
 #   Model downloads use hf_xet (Rust, chunked parallel Xet transfer).
-#   The final verification step prints file sizes so you can confirm
-#   all ~29.5 GB are present before the image is shipped.
+#   Python download logic is in a script file to avoid Docker parser
+#   confusing "from huggingface_hub" with the FROM instruction.
 # ═══════════════════════════════════════════════════════════════════════
 
 # ─── [1/5] Upgrade ComfyUI to latest ───
-# 5.8.5-base ships ComfyUI from March 2026 (pre-Ideogram4).
-# v0.24.0 (June 3, 2026) added native Ideogram4 support.
-# We use git pull directly instead of 'comfy install'
-# because comfy install refuses to run when ComfyUI already exists
-# (the base image has it pre-installed at /comfyui).
+# 5.8.5-base ships ComfyUI from March 2026 (pre-Ideogram4 native support).
+# We use git pull directly because comfy install refuses to overwrite
+# the existing installation that comes with the base image.
 RUN echo "╔══════════════════════════════════════════╗" && \
     echo "║ [1/5] Upgrading ComfyUI to latest      ║" && \
     echo "╚══════════════════════════════════════════╝" && \
     apt-get update -qq && apt-get install -y -qq git && \
+    rm -rf /var/lib/apt/lists/* && \
     git config --global --add safe.directory /comfyui && \
     cd /comfyui && \
-    echo "  Current ComfyUI commit:" && \
-    git log -1 --oneline && \
+    echo "  Current commit: $(git log -1 --oneline)" && \
     echo "  Fetching latest..." && \
     git fetch origin && \
     git reset --hard origin/master && \
-    echo "  Updated ComfyUI commit:" && \
-    git log -1 --oneline && \
-    echo "  Installing dependencies..." && \
+    echo "  Updated commit: $(git log -1 --oneline)" && \
+    echo "  Installing pip dependencies..." && \
     pip install -r requirements.txt && \
     echo "=== [1/5] ComfyUI upgraded to latest ==="
 
 # ─── [2/5] Custom nodes ───
-# Must run AFTER ComfyUI upgrade.
-# Addresses any custom_nodes that were wiped or need refreshing.
 RUN echo "╔══════════════════════════════════════════╗" && \
     echo "║ [2/5] Installing custom nodes           ║" && \
     echo "╚══════════════════════════════════════════╝" && \
@@ -53,8 +48,8 @@ RUN echo "╔══════════════════════�
 
 # ─── [3/5] Install hf_xet (fast downloads) ───
 # Rust-based chunked parallel download via HuggingFace Xet storage.
-# Auto-detected by huggingface_hub — no environment variables needed.
-# No HF token required to download from public repos.
+# Auto-detected by huggingface_hub — no env vars needed.
+# No HF token required — Comfy-Org/Ideogram-4 is a public repo.
 RUN echo "╔══════════════════════════════════════════╗" && \
     echo "║ [3/5] Installing hf_xet accelerator     ║" && \
     echo "╚══════════════════════════════════════════╝" && \
@@ -63,54 +58,50 @@ RUN echo "╔══════════════════════�
     echo "=== [3/5] hf_xet installed ==="
 
 # ─── [4/5] Download Ideogram 4 models (FP8, ~29.5 GB) ───
-# Uses snapshot_download with hf_xet → chunked parallel Xet transfer.
-# allow_patterns filters only the FP8 files (skips NVFP4 variants).
-# Progress bars visible in RunPod build logs.
+# Write the download script to a file to avoid Docker parser issues
+# (Docker confuses "from huggingface_hub" at column 0 with a FROM instruction
+# when using inline python3 -c with multi-line strings).
+# Uses snapshot_download with allow_patterns → only FP8 files (skip NVFP4).
 RUN echo "╔══════════════════════════════════════════╗" && \
     echo "║ [4/5] Downloading Ideogram 4 models     ║" && \
     echo "║       ~29.5 GB - 30-90 min with hf_xet  ║" && \
     echo "╚══════════════════════════════════════════╝" && \
-    python3 -c "
-from huggingface_hub import snapshot_download
-import os, shutil
-
-snapshot_download(
-    'Comfy-Org/Ideogram-4',
-    allow_patterns=[
-        'diffusion_models/ideogram4_fp8*',
-        'diffusion_models/ideogram4_unconditional_fp8*',
-        'text_encoders/qwen3vl_8b_fp8*',
-        'vae/flux2-vae.safetensors',
-    ],
-    local_dir='/tmp/ideogram4',
-    local_dir_use_symlinks=False,
-)
-
-os.makedirs('/comfyui/models/diffusion_models', exist_ok=True)
-os.makedirs('/comfyui/models/text_encoders', exist_ok=True)
-os.makedirs('/comfyui/models/vae', exist_ok=True)
-
-for f in os.listdir('/tmp/ideogram4/diffusion_models'):
-    src = f'/tmp/ideogram4/diffusion_models/{f}'
-    dst = f'/comfyui/models/diffusion_models/{f}'
-    print(f'  {f} ({os.path.getsize(src)/1e9:.2f} GB)')
-    shutil.move(src, dst)
-
-for f in os.listdir('/tmp/ideogram4/text_encoders'):
-    src = f'/tmp/ideogram4/text_encoders/{f}'
-    dst = f'/comfyui/models/text_encoders/{f}'
-    print(f'  {f} ({os.path.getsize(src)/1e9:.2f} GB)')
-    shutil.move(src, dst)
-
-for f in os.listdir('/tmp/ideogram4/vae'):
-    src = f'/tmp/ideogram4/vae/{f}'
-    dst = f'/comfyui/models/vae/{f}'
-    print(f'  {f} ({os.path.getsize(src)/1e6:.1f} MB)')
-    shutil.move(src, dst)
-
-shutil.rmtree('/tmp/ideogram4')
-print('All models moved to /comfyui/models/')
-" && \
+    printf '%s\n' \
+      'import os, shutil' \
+      'from huggingface_hub import snapshot_download' \
+      '' \
+      'snapshot_download(' \
+      '    "Comfy-Org/Ideogram-4",' \
+      '    allow_patterns=[' \
+      '        "diffusion_models/ideogram4_fp8*",' \
+      '        "diffusion_models/ideogram4_unconditional_fp8*",' \
+      '        "text_encoders/qwen3vl_8b_fp8*",' \
+      '        "vae/flux2-vae.safetensors",' \
+      '    ],' \
+      '    local_dir="/tmp/ideogram4",' \
+      '    local_dir_use_symlinks=False,' \
+      ')' \
+      '' \
+      'os.makedirs("/comfyui/models/diffusion_models", exist_ok=True)' \
+      'os.makedirs("/comfyui/models/text_encoders", exist_ok=True)' \
+      'os.makedirs("/comfyui/models/vae", exist_ok=True)' \
+      '' \
+      'for d in ["diffusion_models", "text_encoders", "vae"]:' \
+      '    src_dir = os.path.join("/tmp/ideogram4", d)' \
+      '    dst_dir = os.path.join("/comfyui/models", d)' \
+      '    if os.path.isdir(src_dir):' \
+      '        for f in sorted(os.listdir(src_dir)):' \
+      '            src = os.path.join(src_dir, f)' \
+      '            dst = os.path.join(dst_dir, f)' \
+      '            size_mb = os.path.getsize(src) / 1e6' \
+      '            print(f"  {f} ({size_mb:.0f} MB)")' \
+      '            shutil.move(src, dst)' \
+      '' \
+      'shutil.rmtree("/tmp/ideogram4", ignore_errors=True)' \
+      'print("All models moved to /comfyui/models/")' \
+      > /tmp/download_models.py && \
+    python3 /tmp/download_models.py && \
+    rm /tmp/download_models.py && \
     echo "=== [4/5] All models downloaded ==="
 
 # ─── [5/5] Verify + cleanup ───
