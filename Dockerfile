@@ -11,63 +11,112 @@
 
 FROM runpod/worker-comfyui:5.8.5-base
 
-# ---------------------------------------------------------------------------
-# 0. Reinstall ComfyUI to latest
-# ---------------------------------------------------------------------------
-# 5.8.5-base ships ComfyUI from March 2026 (v0.18.x era).
-# Ideogram 4 native support was added in ComfyUI v0.24.0 (June 3, 2026).
-# The RunPod handler (handler.py, start.sh) lives at / and survives.
-# comfy-cli and comfy-node-install are at /usr/local/bin and survive too.
-# ComfyUI reinstall goes first — it's the most stable layer (rarely changes).
-# Custom nodes and models come after, so they can leverage Docker cache.
-# ---------------------------------------------------------------------------
-RUN /usr/bin/yes | comfy --workspace /comfyui install --version latest --nvidia
+# ═══════════════════════════════════════════════════════════════════════
+# Build Observability:
+#   Each section prints [N/5] markers visible in the RunPod Builds tab.
+#   Model downloads use huggingface_hub with progress bars.
+#   The final verification step prints file sizes so you can confirm
+#   all ~29.5 GB are present before the image is shipped.
+# ═══════════════════════════════════════════════════════════════════════
 
-# ---------------------------------------------------------------------------
-# 1. Custom nodes required by the Ideogram 4 workflow
-# ---------------------------------------------------------------------------
-# comfyui-kjnodes provides:
-#   - Ideogram4PromptBuilderKJ   (structured prompt builder)
-#   - Ideogram4Scheduler          (Euler + custom sigma schedule)
-#   - CFGOverride                 (CFG for DualModelGuider)
-#   - ComfyMathExpression         (resolution rounding to 16px)
-#   - EmptyFlux2LatentImage       (Flux 2 latent creation)
-#
-# NOTE: Installed AFTER ComfyUI reinstall because comfy install --version
-#       wipes /comfyui/custom_nodes/.
-# ---------------------------------------------------------------------------
-RUN comfy-node-install comfyui-kjnodes
+# ─── [1/5] Reinstall ComfyUI to latest (for Ideogram4 native nodes) ───
+# 5.8.5-base ships ComfyUI from March 2026 (pre-Ideogram4).
+# v0.24.0 (June 3, 2026) added DualModelGuider, EmptyFlux2LatentImage.
+RUN echo "╔══════════════════════════════════════════╗" && \
+    echo "║ [1/5] Installing ComfyUI latest         ║" && \
+    echo "╚══════════════════════════════════════════╝" && \
+    /usr/bin/yes | comfy --workspace /comfyui install --version latest --nvidia && \
+    echo "=== [1/5] ComfyUI latest installed ==="
 
-# ---------------------------------------------------------------------------
-# 2. Ideogram 4 models — FP8 (~29.5 GB total)
-# ---------------------------------------------------------------------------
-# Source: https://huggingface.co/Comfy-Org/Ideogram-4
-# License: ideogram-non-commercial-model-agreement (NON-COMMERCIAL USE ONLY)
-# ---------------------------------------------------------------------------
+# ─── [2/5] Custom nodes ───
+# Must run AFTER ComfyUI reinstall (comfy install wipes custom_nodes/).
+RUN echo "╔══════════════════════════════════════════╗" && \
+    echo "║ [2/5] Installing custom nodes           ║" && \
+    echo "╚══════════════════════════════════════════╝" && \
+    comfy-node-install comfyui-kjnodes && \
+    echo "=== [2/5] comfyui-kjnodes installed ==="
 
-# Main conditional UNet (9.28 GB)
-RUN comfy model download \
-  --url "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_fp8_scaled.safetensors" \
-  --relative-path models/diffusion_models \
-  --filename ideogram4_fp8_scaled.safetensors
+# ─── [3/5] Install fast download backend ───
+# hf_xet (Rust, chunked parallel downloads via HuggingFace Xet storage).
+# Auto-detected by huggingface_hub — no environment variables needed.
+RUN echo "╔══════════════════════════════════════════╗" && \
+    echo "║ [3/5] Installing hf_xet accelerator     ║" && \
+    echo "╚══════════════════════════════════════════╝" && \
+    uv pip install -U huggingface_hub hf-xet && \
+    python3 -c "import hf_xet; print('hf_xet', hf_xet.__version__, 'ready')" && \
+    echo "=== [3/5] hf_xet installed ==="
 
-# Unconditional UNet (9.28 GB)
-RUN comfy model download \
-  --url "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_unconditional_fp8_scaled.safetensors" \
-  --relative-path models/diffusion_models \
-  --filename ideogram4_unconditional_fp8_scaled.safetensors
+# ─── [4/5] Download Ideogram 4 models (FP8, ~29.5 GB) ───
+# Uses snapshot_download with hf_xet → chunked parallel Xet transfer.
+# Files go to /tmp first, then moved to ComfyUI model directories.
+# Progress bars visible in RunPod build logs.
+RUN echo "╔══════════════════════════════════════════╗" && \
+    echo "║ [4/5] Downloading Ideogram 4 models     ║" && \
+    echo "║       ~29.5 GB - this will take a while ║" && \
+    echo "╚══════════════════════════════════════════╝" && \
+    python3 -c "
+from huggingface_hub import snapshot_download
+import os, shutil
 
-# Text encoder — Qwen3-VL 8B quantized FP8 (10.6 GB)
-RUN comfy model download \
-  --url "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/text_encoders/qwen3vl_8b_fp8_scaled.safetensors" \
-  --relative-path models/text_encoders \
-  --filename qwen3vl_8b_fp8_scaled.safetensors
+snapshot_download(
+    'Comfy-Org/Ideogram-4',
+    allow_patterns=[
+        'diffusion_models/ideogram4_fp8*',
+        'diffusion_models/ideogram4_unconditional_fp8*',
+        'text_encoders/qwen3vl_8b_fp8*',
+        'vae/flux2-vae.safetensors',
+    ],
+    local_dir='/tmp/ideogram4',
+    local_dir_use_symlinks=False,
+)
 
-# VAE — Flux 2 VAE (336 MB)
-RUN comfy model download \
-  --url "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/vae/flux2-vae.safetensors" \
-  --relative-path models/vae \
-  --filename flux2-vae.safetensors
+os.makedirs('/comfyui/models/diffusion_models', exist_ok=True)
+os.makedirs('/comfyui/models/text_encoders', exist_ok=True)
+os.makedirs('/comfyui/models/vae', exist_ok=True)
+
+for f in os.listdir('/tmp/ideogram4/diffusion_models'):
+    src = f'/tmp/ideogram4/diffusion_models/{f}'
+    dst = f'/comfyui/models/diffusion_models/{f}'
+    print(f'  {f} ({os.path.getsize(src)/1e9:.2f} GB)')
+    shutil.move(src, dst)
+
+for f in os.listdir('/tmp/ideogram4/text_encoders'):
+    src = f'/tmp/ideogram4/text_encoders/{f}'
+    dst = f'/comfyui/models/text_encoders/{f}'
+    print(f'  {f} ({os.path.getsize(src)/1e9:.2f} GB)')
+    shutil.move(src, dst)
+
+for f in os.listdir('/tmp/ideogram4/vae'):
+    src = f'/tmp/ideogram4/vae/{f}'
+    dst = f'/comfyui/models/vae/{f}'
+    print(f'  {f} ({os.path.getsize(src)/1e6:.1f} MB)')
+    shutil.move(src, dst)
+
+shutil.rmtree('/tmp/ideogram4')
+print('All models moved to /comfyui/models/')
+" && \
+    echo "=== [4/5] All models downloaded ==="
+
+# ─── [5/5] Verify + cleanup ───
+RUN echo "╔══════════════════════════════════════════╗" && \
+    echo "║ [5/5] Verifying model files             ║" && \
+    echo "╚══════════════════════════════════════════╝" && \
+    echo "--- Diffusion models ---" && \
+    ls -lh /comfyui/models/diffusion_models/ && \
+    echo "--- Text encoders ---" && \
+    ls -lh /comfyui/models/text_encoders/ && \
+    echo "--- VAE ---" && \
+    ls -lh /comfyui/models/vae/ && \
+    echo "--- Total model size ---" && \
+    du -sh /comfyui/models/diffusion_models/ && \
+    du -sh /comfyui/models/text_encoders/ && \
+    du -sh /comfyui/models/vae/ && \
+    du -sh /comfyui/models/ && \
+    echo "--- Cleaning HF cache ---" && \
+    rm -rf /root/.cache/huggingface && \
+    echo "╔══════════════════════════════════════════╗" && \
+    echo "║ BUILD COMPLETE - Ideogram 4 ready       ║" && \
+    echo "╚══════════════════════════════════════════╝"
 
 # ---------------------------------------------------------------------------
 # Deployment:

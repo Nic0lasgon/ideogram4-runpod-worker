@@ -21,7 +21,8 @@ This repository contains a custom Docker image for running [Ideogram 4](https://
 
 | Component | Details |
 |---|---|
-| **Base Image** | `runpod/worker-comfyui:5.8.5-base` (ComfyUI 0.6.x) |
+| **ComfyUI** | Latest (reinstalled on top of base — needs ≥ v0.24.0 for Ideogram4 native) |
+| **Download** | `hf_xet` (Rust, chunked parallel Xet transfer) — 2–5× faster than wget |
 | **Custom Nodes** | `comfyui-kjnodes` (Ideogram4PromptBuilderKJ, Ideogram4Scheduler, CFGOverride, etc.) |
 | **UNet (conditional)** | `ideogram4_fp8_scaled.safetensors` — 9.28 GB |
 | **UNet (unconditional)** | `ideogram4_unconditional_fp8_scaled.safetensors` — 9.28 GB |
@@ -37,6 +38,48 @@ This repository contains a custom Docker image for running [Ideogram 4](https://
 | **Default preset** (20 steps) | ~45–60 sec |
 | **Quality preset** (48 steps) | ~90–120 sec |
 | **Cost per image** (warm) | ~$0.009–$0.037 |
+
+## Build Time & Observability
+
+The Docker build uses `[N/5]` markers and verbose progress output visible in the **RunPod Console → Endpoint → Builds** tab:
+
+```
+╔══════════════════════════════════════════╗
+║ [1/5] Installing ComfyUI latest         ║
+╚══════════════════════════════════════════╝
+... → Done
+
+║ [2/5] Installing custom nodes           ║
+... → Done
+
+║ [3/5] Installing hf_xet accelerator     ║
+... → hf_xet 1.5.1 ready
+
+║ [4/5] Downloading Ideogram 4 models     ║   ← ~20–30 min
+║       ~29.5 GB - this will take a while ║
+  ideogram4_fp8_scaled.safetensors (9.28 GB)
+  ideogram4_unconditional_fp8_scaled (9.28 GB)
+  qwen3vl_8b_fp8_scaled.safetensors (10.6 GB)
+  flux2-vae.safetensors (336 MB)
+... → Done
+
+║ [5/5] Verifying model files             ║
+  9.3G  diffusion_models/
+  11G   text_encoders/
+  336M  vae/
+║ BUILD COMPLETE - Ideogram 4 ready       ║
+```
+
+## Download Acceleration (hf_xet)
+
+Models are downloaded via `hf_xet`, a Rust-based backend that uses HuggingFace's Xet storage for **chunked parallel downloads**. Compared to single-threaded `wget`:
+
+| Method | Parallelism | Speed (typical build link) |
+|---|---|---|
+| `wget` / `comfy model download` | Single-threaded | ~1–2 MB/s → ~4–8 hours |
+| **hf_xet** (this image) | **Multi-chunk parallel** | ~5–20 MB/s → ~30–90 minutes |
+
+No API token or special configuration needed — `hf_xet` auto-detects Xet repos.
 
 ## API Usage
 
